@@ -70,10 +70,10 @@ def generate_block_diagonal_matrix(cluster_sizes, p_in=0.75, p_out=0.05, seed=No
     same = (labels[:, None] == labels[None, :])          # (N,N) bool
     probs = np.where(same, p_in, p_out)
 
-    upper = np.triu(rng.random((N, N)) < probs, k=1)    # strict upper tri
-    Y = (upper + upper.T).astype(float)
-    # Each node is always in the same cluster as itself (self-contact).
-    np.fill_diagonal(Y, 1.0)
+    # Sample upper triangle INCLUDING diagonal, then mirror to enforce symmetry.
+    # This allows probabilistic sampling of diagonal \"self-contact\" entries too.
+    upper = np.triu(rng.random((N, N)) < probs, k=0).astype(float)
+    Y = upper + upper.T - np.diag(np.diag(upper))
     return Y, labels
 
 

@@ -38,8 +38,10 @@ def generate_block_diagonal_matrix(cluster_sizes, p_in=0.30, p_out=0.05, seed=No
     same = (labels[:, None] == labels[None, :])          # (N,N) bool
     probs = np.where(same, p_in, p_out)
 
-    upper = np.triu(rng.random((N, N)) < probs, k=1)    # strict upper tri
-    Y = (upper + upper.T).astype(float)
+    # Sample upper triangle INCLUDING diagonal, then mirror to enforce symmetry.
+    # This allows probabilistic sampling of diagonal \"self-contact\" entries too.
+    upper = np.triu(rng.random((N, N)) < probs, k=0).astype(float)
+    Y = upper + upper.T - np.diag(np.diag(upper))
     return Y, labels
 
 
@@ -49,9 +51,28 @@ def soft_threshold(x, tau):
     return np.sign(x) * np.maximum(np.abs(x) - tau, 0.0)
 
 
-def ssc_admm(Y, lambda_e=1.0, lambda_z=10.0, mu=1.0, max_iter=500, tol=1e-4):
+def ssc_admm(
+    Y,
+    lambda_e=1.0,
+    lambda_z=10.0,
+    mu=1.0,
+    rho=1.0,
+    max_iter=500,
+    tol=1e-4,
+):
     """
-    Solve the SSC objective via ADMM (see module docstring).
+    Nuclear-norm SSC via ADMM, matching the common splitting:
+
+        min_{X,C,J,E}  ||J||_* + lambda_e ||E||_1 + (lambda_z/2)||Y - YX - E||_F^2
+        s.t.           X - C + diag(C) = 0
+                       C - J = 0
+
+    With duals Lambda (for X - C + diag(C)=0) and Gamma (for C - J=0),
+    and penalties mu, rho. The C-update follows the entrywise formula:
+
+      Let A = X + (1/mu) Lambda,   B = J - (1/rho) Gamma.
+      For i != j:  C_ij = (mu * A_ij + rho * B_ij) / (mu + rho)
+      For i == j:  C_ii = B_ii
 
     Parameters
     ----------
@@ -66,49 +87,63 @@ def ssc_admm(Y, lambda_e=1.0, lambda_z=10.0, mu=1.0, max_iter=500, tol=1e-4):
     -------
     X, J, E  : ndarrays
     """
-    # objective = ||J||* + lambda_e ||E||_1 + lambda_z/2 ||Y - YX - E||_F^2 where X = J, diag(X) = 0
     n, N = Y.shape
 
-    X      = np.zeros((N, N))
-    J      = np.zeros((N, N))
-    E      = np.zeros((n, N))
+    X = np.zeros((N, N))
+    C = np.zeros((N, N))
+    J = np.zeros((N, N))
+    E = np.zeros((n, N))
+
     Lambda = np.zeros((N, N))
+    Gamma = np.zeros((N, N))
+
+    YtY = Y.T @ Y
+    A_inv = np.linalg.inv(lambda_z * YtY + mu * np.eye(N))
 
     for it in range(max_iter):
+        X_prev = X.copy()
         J_prev = J.copy()
 
-        # J_{k+1} = SVT_{1/μ}(X_k + μ^{-1} Λ_k)
-        U, S_svd, Vt = np.linalg.svd(X + Lambda / mu, full_matrices=False)
-        S_soft = soft_threshold(S_svd, 1.0 / mu)
+        # X-update:
+        #   (lambda_z Y^T Y + mu I) X = lambda_z Y^T (Y - E) + mu (C - diag(C)) - Lambda
+        C_off = C.copy()
+        np.fill_diagonal(C_off, 0.0)
+        RHS = lambda_z * (Y.T @ (Y - E)) + mu * C_off - Lambda
+        X = A_inv @ RHS
+        #np.fill_diagonal(X, 0.0)  # implied by X - C + diag(C)=0
+
+        # J-update: singular value thresholding (SVT) on (C + Gamma/rho)
+        U, S_svd, Vt = np.linalg.svd(C + Gamma / rho, full_matrices=False)
+        S_soft = soft_threshold(S_svd, 1.0 / rho)
         J = (U * S_soft) @ Vt
 
-        # X-update: v_j = col_j(J_{k+1} − μ^{-1} Λ_k); x_{−j} from normal eq.; x_{jj}=0.
-        Vk = J - Lambda / mu
-        In1 = np.eye(N - 1)
-        for j in range(N):
-            mask = np.ones(N, dtype=bool)
-            mask[j] = False
-            idx = np.flatnonzero(mask)
-            Ymj = Y[:, idx]
-            A_j = lambda_z * (Ymj.T @ Ymj) + mu * In1
-            b = lambda_z * (Ymj.T @ (Y[:, j] - E[:, j])) + mu * Vk[idx, j]
-            X[idx, j] = np.linalg.solve(A_j, b)
-        np.fill_diagonal(X, 0.0)
+        # C-update: entrywise closed form from the augmented Lagrangian
+        A = X + Lambda / mu
+        B = J - Gamma / rho
+        C = (mu * A + rho * B) / (mu + rho)
+        np.fill_diagonal(C, np.diag(B))
 
         # E_{k+1} = S_{λ_e/λ_z}(Y − Y X_{k+1})
         E = soft_threshold(Y - Y @ X, lambda_e / lambda_z)
 
-        Lambda += mu * (X - J)
+        # Dual updates
+        # Lambda for: X - C + diag(C) = 0
+        Lambda += mu * (X - C + np.diag(np.diag(C)))
+        # Gamma for: C - J = 0
+        Gamma += rho * (C - J)
 
-        primal_res = np.linalg.norm(X - J, 'fro')
-        dual_res   = mu * np.linalg.norm(J - J_prev, 'fro')
+        primal1 = np.linalg.norm(X - C + np.diag(np.diag(C)), 'fro')
+        primal2 = np.linalg.norm(C - J, 'fro')
+        primal_res = max(primal1, primal2)
+        dual_res = max(mu * np.linalg.norm(X - X_prev, 'fro'),
+                       rho * np.linalg.norm(J - J_prev, 'fro'))
         if (it + 1) % 50 == 0:
             print(f"  iter {it+1:4d}  primal={primal_res:.2e}  dual={dual_res:.2e}")
         if primal_res < tol and dual_res < tol:
             print(f"  Converged at iter {it + 1}.")
             break
 
-    return X, J, E
+    return X, C, J, E
 
 
 # ── Clustering from C ──────────────────────────────────────────────────────────
@@ -172,7 +207,7 @@ if __name__ == '__main__':
     print(f"Y: {Y.shape}, clusters: {cluster_sizes}")
 
     print("\nRunning SSC-ADMM ...")
-    X, J, E = ssc_admm(Y, lambda_e=1.0, lambda_z=0.1, mu=1.0)
+    X, C, J, E = ssc_admm(Y, lambda_e=1.0, lambda_z=0.1, mu=1.0, rho=1.0)
 
     # Cluster on X (Y ≈ YX + E). At convergence X ≈ J; use X if stopping early.
     pred_labels = cluster_from_C(X, k)
