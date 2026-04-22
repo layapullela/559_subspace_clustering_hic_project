@@ -72,6 +72,8 @@ def generate_block_diagonal_matrix(cluster_sizes, p_in=0.75, p_out=0.05, seed=No
 
     upper = np.triu(rng.random((N, N)) < probs, k=1)    # strict upper tri
     Y = (upper + upper.T).astype(float)
+    # Each node is always in the same cluster as itself (self-contact).
+    np.fill_diagonal(Y, 1.0)
     return Y, labels
 
 
@@ -114,10 +116,11 @@ def ssc_admm(Y, lambda_e=1.0, lambda_z=10.0, mu=1.0, max_iter=500, tol=1e-4):
         # X-update: (λ_z Y^T Y + μ I) X = λ_z Y^T(Y - E) + μ C - Λ
         RHS = lambda_z * Y.T @ (Y - E) + mu * C - Lambda
         X   = A_inv @ RHS
-        np.fill_diagonal(X, 0.0)   # enforce diag(X) = 0
+        #np.fill_diagonal(X, 0.0)   # enforce diag(X) = 0
 
         # C-update: J = S_{1/μ}(X + μ^{-1} Λ),  C = J - diag(J)
         C = soft_threshold(X + Lambda / mu, 1.0 / mu)
+        np.fill_diagonal(C, 0.0)   # enforce diag(C) = 0
 
         # E-update: E = S_{λ_e/λ_z}(Y - YX)
         E = soft_threshold(Y - Y @ X, lambda_e / lambda_z)
@@ -127,8 +130,8 @@ def ssc_admm(Y, lambda_e=1.0, lambda_z=10.0, mu=1.0, max_iter=500, tol=1e-4):
         Lambda += mu * (X - C)
 
         # Convergence: primal = ||X - C||,  dual = μ||X - X_prev||
-        primal_res = np.linalg.norm(X - C, 'fro')
-        dual_res   = mu * np.linalg.norm(X - X_prev, 'fro')
+        primal_res = np.linalg.norm(X - C, 'fro') # check the condition is met
+        dual_res   = mu * np.linalg.norm(X - X_prev, 'fro') # check algo is converging in final values
         if (it + 1) % 50 == 0:
             print(f"  iter {it+1:4d}  primal={primal_res:.2e}  dual={dual_res:.2e}")
         if primal_res < tol and dual_res < tol:
@@ -194,7 +197,7 @@ if __name__ == '__main__':
     cluster_sizes = [20, 25, 15, 20]
 
     Y, true_labels = generate_block_diagonal_matrix(
-        cluster_sizes, p_in=0.50, p_out=0.05, seed=42
+        cluster_sizes, p_in=0.75, p_out=0.05, seed=42
     )
     print(f"Y: {Y.shape}, clusters: {cluster_sizes}")
 
