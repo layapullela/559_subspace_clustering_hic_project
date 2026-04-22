@@ -68,8 +68,8 @@ def generate_block_diagonal_matrix(cluster_sizes, p_in=0.30, p_out=0.05, seed=No
     labels = np.repeat(np.arange(len(cluster_sizes)), cluster_sizes)
     same = (labels[:, None] == labels[None, :])
     probs = np.where(same, p_in, p_out)
-    upper = np.triu(rng.random((N, N)) < probs, k=1)
-    Y = (upper + upper.T).astype(float)
+    upper = np.triu(rng.random((N, N)) < probs, k=0).astype(float)
+    Y = upper + upper.T - np.diag(np.diag(upper))
     return Y, labels
 
 
@@ -88,8 +88,16 @@ def graph_laplacian(C):
 
 # ── ADMM solver ──────────────────────────────────────────────────────────────
 
-def ssc_admm_nuc_lap(Y, lambda_e=1.0, lambda_z=0.1, gamma=0.1, mu=1.0,
-                     max_iter=500, tol=1e-4):
+def ssc_admm_nuc_lap(
+    Y,
+    lambda_e=1.0,
+    lambda_z=0.1,
+    gamma=0.1,
+    mu=1.0,
+    rho=1.0,
+    max_iter=500,
+    tol=1e-4,
+):
     """
     Nuclear-norm SSC + γ tr(C^T L C) Laplacian regularisation.
 
@@ -109,63 +117,70 @@ def ssc_admm_nuc_lap(Y, lambda_e=1.0, lambda_z=0.1, gamma=0.1, mu=1.0,
     """
     n, N = Y.shape
 
-    X       = np.zeros((N, N))
-    J       = np.zeros((N, N))
-    C       = np.zeros((N, N))
-    E       = np.zeros((n, N))
-    Lambda1 = np.zeros((N, N))
-    Lambda2 = np.zeros((N, N))
+    # Match `ssc_admm_nuc.py` variable naming / constraints:
+    #   X - C + diag(C) = 0   and   C - J = 0
+    X = np.zeros((N, N))
+    C = np.zeros((N, N))
+    J = np.zeros((N, N))
+    E = np.zeros((n, N))
 
-    In1 = np.eye(N - 1)
+    Lambda = np.zeros((N, N))
+    Gamma = np.zeros((N, N))
+
+    YtY = Y.T @ Y
+    A_inv = np.linalg.inv(lambda_z * YtY + mu * np.eye(N))
+
     I_N = np.eye(N)
 
     for it in range(max_iter):
+        X_prev = X.copy()
         J_prev = J.copy()
         C_prev = C.copy()
 
-        # ── 1. J-update: SVT_{1/μ}(X + Λ₁/μ) ───────────────────────────
-        U, s, Vt = np.linalg.svd(X + Lambda1 / mu, full_matrices=False)
-        J = (U * soft_threshold(s, 1.0 / mu)) @ Vt
+        # X-update (same as nuclear-norm objective):
+        #   (lambda_z Y^T Y + mu I) X = lambda_z Y^T (Y - E) + mu (C - diag(C)) - Lambda
+        C_off = C.copy()
+        np.fill_diagonal(C_off, 0.0)
+        RHS = lambda_z * (Y.T @ (Y - E)) + mu * C_off - Lambda
+        X = A_inv @ RHS
 
-        # ── 2. C-update: (2γ L + μI) C = μ V,  V = X + Λ₂/μ ────────────
+        # J-update (same as nuclear-norm objective): SVT on (C + Gamma/rho)
+        U, s, Vt = np.linalg.svd(C + Gamma / rho, full_matrices=False)
+        J = (U * soft_threshold(s, 1.0 / rho)) @ Vt
+
+        # C-update (only difference): Laplacian-regularised solve using same A, B
+        # A and B follow `ssc_admm_nuc.py` exactly:
+        A = X + Lambda / mu
+        B = J - Gamma / rho
+
+        # Freeze Laplacian at previous C to avoid differentiating through |C|
         L = graph_laplacian(C_prev)
-        V = X + Lambda2 / mu
-        C = np.linalg.solve(2.0 * gamma * L + mu * I_N, mu * V)
-        np.fill_diagonal(C, 0.0)
 
-        # ── 3. X-update: column-wise least squares ───────────────────────
-        Vtilde1 = J - Lambda1 / mu
-        Vtilde2 = C - Lambda2 / mu
-        for j in range(N):
-            mask = np.ones(N, dtype=bool)
-            mask[j] = False
-            idx = np.flatnonzero(mask)
-            Ymj = Y[:, idx]
-            A_j = lambda_z * (Ymj.T @ Ymj) + 2.0 * mu * In1
-            b_j = (lambda_z * Ymj.T @ (Y[:, j] - E[:, j])
-                   + mu * Vtilde1[idx, j]
-                   + mu * Vtilde2[idx, j])
-            X[idx, j] = np.linalg.solve(A_j, b_j)
-        np.fill_diagonal(X, 0.0)
+        # Solve: (2γ L + (μ+ρ)I) C = μA + ρB
+        C = np.linalg.solve(2.0 * gamma * L + (mu + rho) * I_N, mu * A + rho * B)
 
-        # ── 4. E-update: soft-threshold ──────────────────────────────────
+        # Keep the same diagonal handling as the nuclear-norm version:
+        np.fill_diagonal(C, np.diag(B))
+
+        # E-update (same as nuclear-norm objective)
         E = soft_threshold(Y - Y @ X, lambda_e / lambda_z)
 
-        # ── 5. Dual ascent ───────────────────────────────────────────────
-        Lambda1 += mu * (X - J)
-        Lambda2 += mu * (X - C)
+        # Dual updates (same as nuclear-norm objective)
+        Lambda += mu * (X - C + np.diag(np.diag(C)))
+        Gamma += rho * (C - J)
 
-        # ── Convergence ──────────────────────────────────────────────────
-        p_res = max(np.linalg.norm(X - J, 'fro'),
-                    np.linalg.norm(X - C, 'fro'))
-        d_res = max(mu * np.linalg.norm(J - J_prev, 'fro'),
-                    mu * np.linalg.norm(C - C_prev, 'fro'))
+        primal1 = np.linalg.norm(X - C + np.diag(np.diag(C)), 'fro')
+        primal2 = np.linalg.norm(C - J, 'fro')
+        primal_res = max(primal1, primal2)
+        dual_res = max(mu * np.linalg.norm(X - X_prev, 'fro'),
+                       rho * np.linalg.norm(J - J_prev, 'fro'))
         if (it + 1) % 50 == 0:
-            print(f"  iter {it+1:4d}  primal={p_res:.2e}  dual={d_res:.2e}")
-        if p_res < tol and d_res < tol:
+            print(f"  iter {it+1:4d}  primal={primal_res:.2e}  dual={dual_res:.2e}")
+        if primal_res < tol and dual_res < tol:
             print(f"  Converged at iter {it + 1}.")
             break
 
+    # Return order compatible with benchmark usage: X, J, C, E
     return X, J, C, E
 
 
@@ -216,7 +231,7 @@ if __name__ == '__main__':
     cluster_sizes = [20, 25, 15, 20]
 
     Y, true_labels = generate_block_diagonal_matrix(
-        cluster_sizes, p_in=0.50, p_out=0.05, seed=42
+        cluster_sizes, p_in=0.75, p_out=0.05, seed=42
     )
     N = Y.shape[0]
     print(f"Y: {Y.shape},  clusters: {cluster_sizes}\n")
@@ -224,7 +239,7 @@ if __name__ == '__main__':
     # ── Nuclear-norm baseline ────────────────────────────────────────
     print("Running Nuclear-norm SSC ...")
     t0 = time.perf_counter()
-    X_nuc, _, _ = ssc_nuc(Y, lambda_e=1.0, lambda_z=0.1, mu=1.0)
+    X_nuc, _C_nuc, _J_nuc, _E_nuc = ssc_nuc(Y, lambda_e=1.0, lambda_z=0.1, mu=1.0)
     t_nuc = time.perf_counter() - t0
     pred_nuc = cluster_from_C(X_nuc, k)
     ari_nuc = adjusted_rand_score(true_labels, pred_nuc)
@@ -233,7 +248,7 @@ if __name__ == '__main__':
     # ── L1-norm baseline ─────────────────────────────────────────────
     print("Running L1-norm SSC ...")
     t0 = time.perf_counter()
-    X_l1, _, _ = ssc_l1(Y, lambda_e=1.0, lambda_z=10.0, mu=1.0)
+    X_l1, _C_l1, _E_l1 = ssc_l1(Y, lambda_e=1.0, lambda_z=10.0, mu=1.0)
     t_l1 = time.perf_counter() - t0
     pred_l1 = cluster_from_C(X_l1, k)
     ari_l1 = adjusted_rand_score(true_labels, pred_l1)

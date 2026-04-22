@@ -107,7 +107,7 @@ TEST_CASES = [
 # Shared ADMM hyper-parameters
 L1_PARAMS      = dict(lambda_e=1.0, lambda_z=10.0, mu=1.0, max_iter=500, tol=1e-4)
 NUC_PARAMS     = dict(lambda_e=1.0, lambda_z=0.1,  mu=1.0, max_iter=500, tol=1e-4)
-NUC_LAP_PARAMS = dict(lambda_e=1.0, lambda_z=0.1, gamma=0.1, mu=1.0, max_iter=500, tol=1e-4)
+NUC_LAP_PARAMS = dict(lambda_e=1.0, lambda_z=0.1, gamma=0.1, mu=1.0, rho=1.0, max_iter=500, tol=1e-4)
 
 METHODS = ["l1", "nuc", "nuc_lap"]
 METHOD_LABELS = {"l1": "L1", "nuc": "Nuc", "nuc_lap": "Nuc+Lap"}
@@ -123,7 +123,7 @@ def run_one(Y, true_labels, k, method="l1"):
     if method == "l1":
         X, _C, _E = ssc_l1(Y, **L1_PARAMS)
     elif method == "nuc":
-        X, _J, _E = ssc_nuc(Y, **NUC_PARAMS)
+        X, _C, _J, _E = ssc_nuc(Y, **NUC_PARAMS)
     elif method == "nuc_lap":
         X, _J, _C, _E = ssc_admm_nuc_lap(Y, **NUC_LAP_PARAMS)
     else:
