@@ -132,7 +132,7 @@ def ssc_admm(Y, lambda_e=1.0, lambda_z=10.0, mu=1.0, max_iter=500, tol=1e-4):
         # Convergence: primal = ||X - C||,  dual = μ||X - X_prev||
         primal_res = np.linalg.norm(X - C, 'fro') # check the condition is met
         dual_res   = mu * np.linalg.norm(X - X_prev, 'fro') # check algo is converging in final values
-        if (it + 1) % 50 == 0:
+        if (it) % 50 == 0:
             print(f"  iter {it+1:4d}  primal={primal_res:.2e}  dual={dual_res:.2e}")
         if primal_res < tol and dual_res < tol:
             print(f"  Converged at iter {it + 1}.")

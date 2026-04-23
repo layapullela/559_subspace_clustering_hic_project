@@ -147,20 +147,25 @@ def ssc_admm_nuc_lap(
         # J-update (same as nuclear-norm objective): SVT on (C + Gamma/rho)
         U, s, Vt = np.linalg.svd(C + Gamma / rho, full_matrices=False)
         J = (U * soft_threshold(s, 1.0 / rho)) @ Vt
+        #J = soft_threshold(C + Gamma / rho, 1.0 / rho)
 
-        # C-update (only difference): Laplacian-regularised solve using same A, B
-        # A and B follow `ssc_admm_nuc.py` exactly:
+        # C-update: column-wise solve per derived formula
+        #   c^j = ((μ+ρ)I + 2γL - μ e_j e_j^T)^{-1} (μ(a_j - a_{jj} e_j) + ρ b_j)
+        # The rank-1 correction -μ e_j e_j^T removes the μ penalty from the j-th diagonal
+        # (constraint 1 is X = C_off, so it does not constrain C_jj), and the -a_{jj} e_j
+        # term in the RHS removes the μ contribution from row j of the system.
         A = X + Lambda / mu
         B = J - Gamma / rho
 
-        # Freeze Laplacian at previous C to avoid differentiating through |C|
         L = graph_laplacian(C_prev)
+        M_base = 2.0 * gamma * L + (mu + rho) * I_N   # shared across columns
 
-        # Solve: (2γ L + (μ+ρ)I) C = μA + ρB
-        C = np.linalg.solve(2.0 * gamma * L + (mu + rho) * I_N, mu * A + rho * B)
-
-        # Keep the same diagonal handling as the nuclear-norm version:
-        np.fill_diagonal(C, np.diag(B))
+        # c^j = ((μ+ρ)I + 2γL - μ e_j e_j^T)^{-1} (μ(a_j - a_{jj} e_j) + ρ b_j)
+        for j in range(N):
+            e_j    = I_N[:, j]
+            M_j    = M_base - mu * np.outer(e_j, e_j)          # (μ+ρ)I + 2γL - μ e_j e_j^T
+            rhs_j  = mu * (A[:, j] - A[j, j] * e_j) + rho * B[:, j]  # μ(a_j - a_{jj} e_j) + ρ b_j
+            C[:, j] = np.linalg.solve(M_j, rhs_j)
 
         # E-update (same as nuclear-norm objective)
         E = soft_threshold(Y - Y @ X, lambda_e / lambda_z)
@@ -174,7 +179,7 @@ def ssc_admm_nuc_lap(
         primal_res = max(primal1, primal2)
         dual_res = max(mu * np.linalg.norm(X - X_prev, 'fro'),
                        rho * np.linalg.norm(J - J_prev, 'fro'))
-        if (it + 1) % 50 == 0:
+        if (it) % 5 == 0:
             print(f"  iter {it+1:4d}  primal={primal_res:.2e}  dual={dual_res:.2e}")
         if primal_res < tol and dual_res < tol:
             print(f"  Converged at iter {it + 1}.")

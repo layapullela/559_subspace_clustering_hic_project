@@ -235,7 +235,8 @@ def plot_comparison(cases, rows, save_path="benchmark_norms.png"):
     n_methods = len(METHODS)
     w = 0.25
     offsets = np.linspace(-(n_methods - 1) / 2 * w, (n_methods - 1) / 2 * w, n_methods)
-    colors = {"l1": "#4C72B0", "nuc": "#DD8452", "nuc_lap": "#55A868"}
+    # Match requested palette: pink, teal, bright orange
+    colors = {"l1": "#FF5FA2", "nuc": "#FFA500", "nuc_lap": "#17BEBB"}
 
     fig, ax = plt.subplots(figsize=(16, 6))
     for m, off in zip(METHODS, offsets):
@@ -267,7 +268,8 @@ def plot_time_comparison(cases, rows, save_path="benchmark_norms_time.png"):
     n_methods = len(METHODS)
     w = 0.25
     offsets = np.linspace(-(n_methods - 1) / 2 * w, (n_methods - 1) / 2 * w, n_methods)
-    colors = {"l1": "#4C72B0", "nuc": "#DD8452", "nuc_lap": "#55A868"}
+    # Match requested palette: pink, teal, bright orange
+    colors = {"l1": "#FF5FA2", "nuc": "#FFA500", "nuc_lap": "#17BEBB"}
 
     fig, ax = plt.subplots(figsize=(16, 5))
     for m, off in zip(METHODS, offsets):

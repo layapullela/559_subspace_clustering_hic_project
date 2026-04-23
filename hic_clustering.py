@@ -233,7 +233,7 @@ def main() -> None:
     p.add_argument("--out", default="hic_ssc.png", help="Output PNG filename")
     args = p.parse_args()
 
-    window = HicWindow(chrom=args.chrom, binsize=args.binsize, start_bp=args.start_bp, n_bins=300)
+    window = HicWindow(chrom=args.chrom, binsize=args.binsize, start_bp=args.start_bp, n_bins=200)
     print(
         f"Loading Hi-C: {args.hic}\n"
         f"  chrom={window.chrom} binsize={window.binsize} start_bp={window.start_bp} end_bp={window.end_bp}"

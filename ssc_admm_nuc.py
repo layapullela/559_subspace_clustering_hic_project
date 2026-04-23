@@ -103,6 +103,7 @@ def ssc_admm(
     for it in range(max_iter):
         X_prev = X.copy()
         J_prev = J.copy()
+        C_prev = C.copy()
 
         # X-update:
         #   (lambda_z Y^T Y + mu I) X = lambda_z Y^T (Y - E) + mu (C - diag(C)) - Lambda
@@ -137,7 +138,7 @@ def ssc_admm(
         primal_res = max(primal1, primal2)
         dual_res = max(mu * np.linalg.norm(X - X_prev, 'fro'),
                        rho * np.linalg.norm(J - J_prev, 'fro'))
-        if (it + 1) % 50 == 0:
+        if (it) % 50 == 0:
             print(f"  iter {it+1:4d}  primal={primal_res:.2e}  dual={dual_res:.2e}")
         if primal_res < tol and dual_res < tol:
             print(f"  Converged at iter {it + 1}.")
