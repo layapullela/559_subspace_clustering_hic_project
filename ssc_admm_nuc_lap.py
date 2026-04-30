@@ -158,14 +158,28 @@ def ssc_admm_nuc_lap(
         B = J - Gamma / rho
 
         L = graph_laplacian(C_prev)
-        M_base = 2.0 * gamma * L + (mu + rho) * I_N   # shared across columns
+        M_base = 2.0 * gamma * L + (mu + rho) * I_N
+        M_inv  = np.linalg.inv(M_base)
+        C      = M_inv @ (mu * A + rho * B)       # base solve: M_base^{-1} (μA + ρB)
 
-        # c^j = ((μ+ρ)I + 2γL - μ e_j e_j^T)^{-1} (μ(a_j - a_{jj} e_j) + ρ b_j)
-        for j in range(N):
-            e_j    = I_N[:, j]
-            M_j    = M_base - mu * np.outer(e_j, e_j)          # (μ+ρ)I + 2γL - μ e_j e_j^T
-            rhs_j  = mu * (A[:, j] - A[j, j] * e_j) + rho * B[:, j]  # μ(a_j - a_{jj} e_j) + ρ b_j
-            C[:, j] = np.linalg.solve(M_j, rhs_j)
+        # Sherman-Morrison correction applied to all N columns simultaneously.
+        # Each column j solves (M_base - μ e_j e_j^T) c^j = μ(a_j - a_{jj} e_j) + ρ b_j.
+        # By Sherman-Morrison: c^j = C_base[:,j] + δ_j · M_inv[:,j], where:
+        #   α_j = μ / (1 - μ M_inv[j,j])
+        #   δ_j = α_j (C_base[j,j] - μ A[j,j] M_inv[j,j]) - μ A[j,j]
+        # Stacking all j: C += M_inv * δ  (broadcasts δ as a row, scaling each column j by δ_j)
+        diag_M = np.diag(M_inv)                                      # (N,)
+        diag_A = np.diag(A)                                          # (N,)
+        alpha  = mu / (1.0 - mu * diag_M)                           # (N,)  α_j for each j
+        delta  = alpha * (np.diag(C) - mu * diag_A * diag_M) - mu * diag_A  # (N,)  δ_j
+        C     += M_inv * delta  
+        
+        # # c^j = ((μ+ρ)I + 2γL - μ e_j e_j^T)^{-1} (μ(a_j - a_{jj} e_j) + ρ b_j)
+        # for j in range(N):
+        #     e_j    = I_N[:, j]
+        #     M_j    = M_base - mu * np.outer(e_j, e_j)          # (μ+ρ)I + 2γL - μ e_j e_j^T
+        #     rhs_j  = mu * (A[:, j] - A[j, j] * e_j) + rho * B[:, j]  # μ(a_j - a_{jj} e_j) + ρ b_j
+        #     C[:, j] = np.linalg.solve(M_j, rhs_j)                                     # (N,N)  column j += δ_j q_j
 
         # E-update (same as nuclear-norm objective)
         E = soft_threshold(Y - Y @ X, lambda_e / lambda_z)

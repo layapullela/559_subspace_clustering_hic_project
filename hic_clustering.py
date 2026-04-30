@@ -26,10 +26,13 @@ from dataclasses import dataclass
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, BoundaryNorm
+from matplotlib.cm import get_cmap
 
-#from ssc_admm import ssc_admm, cluster_from_C
-from ssc_admm_nuc_lap import ssc_admm_nuc_lap as ssc_admm, cluster_from_C
+from ssc_admm import ssc_admm
+from ssc_admm_nuc import ssc_admm as ssc_admm_nuc
+from ssc_admm_nuc_lap import ssc_admm_nuc_lap, cluster_from_C
+from ssc_admm_nuc_l1 import ssc_admm_nuc_l1
 
 
 @dataclass(frozen=True)
@@ -37,7 +40,7 @@ class HicWindow:
     chrom: str
     binsize: int
     start_bp: int
-    n_bins: int = 100
+    n_bins: int = 300
 
     @property
     def end_bp(self) -> int:
@@ -158,57 +161,72 @@ def _contiguous_boundaries(labels: np.ndarray) -> list[int]:
 
 def visualize_hic_ssc(
     Y: np.ndarray,
-    X: np.ndarray,
-    pred_labels: np.ndarray,
-    metrics: dict[str, float],
+    X_sp: np.ndarray,   pred_sp: np.ndarray,
+    X_nuc: np.ndarray,  pred_nuc: np.ndarray,
+    X_lap: np.ndarray,  pred_lap: np.ndarray,
+    X_l1: np.ndarray,   pred_l1: np.ndarray,
+    k: int,
     out_png: str,
 ) -> None:
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    """
+    2×4 figure: Sparse | Nuc | NucLap | NucL1 — Hi-C boundaries (top) and
+    predicted cluster label tracks in original genomic order (bottom).
+    Cluster colors are consistent across all columns: cluster i always has the
+    same color regardless of method.
+    """
+    fig, axes = plt.subplots(2, 4, figsize=(24, 8))
 
-    # Hi-C counts are heavy-tailed; a log color scale (or robust vmax) makes
-    # off-diagonal structure visible instead of washing it out.
     Y_pos = Y[Y > 0]
     vmin = float(np.percentile(Y_pos, 5)) if Y_pos.size else 1.0
     vmax = float(np.percentile(Y_pos, 99.5)) if Y_pos.size else 1.0
     norm_hic = LogNorm(vmin=max(vmin, 1e-6), vmax=max(vmax, max(vmin, 1e-6) * 1.01))
 
-    boundaries = _contiguous_boundaries(pred_labels)
+    # Shared discrete colormap — same k colors used for every column.
+    _palette = [
+        "#440154",  # 
+        "#3B528B",  # 
+        "#21918C",  # 
+        "#90D743",  # 
+    ]
+    cluster_colors = [_palette[i % len(_palette)] for i in range(k)]
+    from matplotlib.colors import ListedColormap
+    cmap_clusters = ListedColormap(cluster_colors)
+    bounds_norm = BoundaryNorm(np.arange(-0.5, k, 1.0), k)
 
-    ax = axes[0, 0]
-    im = ax.imshow(Y, cmap="Blues", interpolation="nearest", aspect="auto", norm=norm_hic)
-    ax.set_title("Hi-C window (original order)")
-    # Overlay predicted contiguous segment boundaries (no reordering).
-    for b in boundaries:
-        ax.axhline(b - 0.5, color="black", lw=0.6, alpha=0.6)
-        ax.axvline(b - 0.5, color="black", lw=0.6, alpha=0.6)
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    methods = [
+        ("Sparse",  pred_sp,  _contiguous_boundaries(pred_sp)),
+        ("Nuc",     pred_nuc, _contiguous_boundaries(pred_nuc)),
+        ("NucLap",  pred_lap, _contiguous_boundaries(pred_lap)),
+        ("NucL1",   pred_l1,  _contiguous_boundaries(pred_l1)),
+    ]
 
-    ax = axes[0, 1]
-    W = np.abs(X) + np.abs(X.T)
-    im = ax.imshow(W, cmap="hot", interpolation="nearest", aspect="auto")
-    ax.set_title("SSC affinity  W = |X| + |X|^T")
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    for col, (name, pred, bounds) in enumerate(methods):
+        # Row 0 — Hi-C matrix with cluster boundaries overlaid
+        ax = axes[0, col]
+        im = ax.imshow(Y, cmap="Blues", interpolation="nearest", aspect="auto", norm=norm_hic)
+        ax.set_title(f"Hi-C  |  {name} boundaries", fontsize=11)
+        for b in bounds:
+            ax.axhline(b - 0.5, color="black", lw=0.7, alpha=0.7)
+            ax.axvline(b - 0.5, color="black", lw=0.7, alpha=0.7)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    # 1D label track in original order (lets you see contiguity directly).
-    ax = axes[1, 0]
-    track = np.asarray(pred_labels, dtype=float)[None, :]
-    im = ax.imshow(track, aspect="auto", interpolation="nearest", cmap="tab20")
-    ax.set_yticks([])
-    ax.set_xlabel("genomic bin index (original order)")
-    ax.set_title("Predicted cluster id (original order)")
-    for b in boundaries:
-        ax.axvline(b - 0.5, color="black", lw=0.6, alpha=0.6)
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        # Row 1 — 1-D cluster label track in original genomic order
+        ax = axes[1, col]
+        track = np.asarray(pred, dtype=int)[None, :]
+        im = ax.imshow(track, aspect="auto", interpolation="nearest",
+                       cmap=cmap_clusters, norm=bounds_norm)
+        ax.set_yticks([])
+        ax.set_xlabel("genomic bin index (original order)", fontsize=9)
+        ax.set_title(f"{name}  — predicted clusters", fontsize=11)
+        for b in bounds:
+            ax.axvline(b - 0.5, color="black", lw=0.7, alpha=0.7)
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, ticks=range(k))
+        cbar.ax.set_yticklabels([str(i + 1) for i in range(k)])
 
-    ax = axes[1, 1]
-    uniq, counts = np.unique(pred_labels, return_counts=True)
-    ax.bar([str(u) for u in uniq], counts, color="#4C72B0", edgecolor="white")
-    ax.set_title("Cluster sizes")
-    ax.set_xlabel("cluster id")
-    ax.set_ylabel("count")
-
-    title_bits = [f"{k}={v:.4g}" for k, v in metrics.items()]
-    fig.suptitle(" | ".join(title_bits), fontsize=11)
+    fig.suptitle(
+        "Hi-C SSC clustering  —  Sparse | Nuc | NucLap | NucL1  (original genomic order)",
+        fontsize=13,
+    )
     plt.tight_layout()
     plt.savefig(out_png, dpi=160, bbox_inches="tight")
     plt.close(fig)
@@ -229,11 +247,19 @@ def main() -> None:
     p.add_argument("--mu", type=float, default=1.0)
     p.add_argument("--max-iter", type=int, default=500)
     p.add_argument("--tol", type=float, default=1e-4)
+    # NucLap-specific (default: first singular value of Y)
+    p.add_argument("--gamma", type=float, default=None,
+                   help="NucLap Laplacian penalty (default: σ₁(Y))")
+    # NucL1-specific (default: σ₁(Y) / 2 each)
+    p.add_argument("--lambda-sp", type=float, default=None,
+                   help="NucL1 L1/sparsity weight (default: σ₁(Y)/2)")
+    p.add_argument("--lambda-lr", type=float, default=None,
+                   help="NucL1 nuclear-norm/low-rank weight (default: σ₁(Y)/2)")
 
     p.add_argument("--out", default="hic_ssc.png", help="Output PNG filename")
     args = p.parse_args()
 
-    window = HicWindow(chrom=args.chrom, binsize=args.binsize, start_bp=args.start_bp, n_bins=200)
+    window = HicWindow(chrom=args.chrom, binsize=args.binsize, start_bp=args.start_bp, n_bins=300)
     print(
         f"Loading Hi-C: {args.hic}\n"
         f"  chrom={window.chrom} binsize={window.binsize} start_bp={window.start_bp} end_bp={window.end_bp}"
@@ -242,43 +268,106 @@ def main() -> None:
     Y_raw = load_hic_window_observed(args.hic, window, normalization="KR", unit="BP")
     Y = _normalize_matrix(Y_raw, args.norm)
 
-    # SSC expects a data matrix Y of shape (n, N). In the included demos, Y is (N,N),
-    # so we follow that convention here.
-    print("Running SSC-ADMM ...")
+    # Compute first singular value once; used as data-adaptive default scale.
+    sigma1 = float(np.linalg.svd(Y, compute_uv=False)[0])
+    gamma = 2
+    lambda_sp = 1
+    lambda_lr = 1
+    print(f"σ₁(Y)={sigma1:.4g}  →  gamma={gamma:.4g}  lambda_sp={lambda_sp:.4g}  lambda_lr={lambda_lr:.4g}")
+
+    # ── Sparse (L1 only) ──────────────────────────────────────────────────────
+    print("\nRunning SSC-ADMM Sparse ...")
     t0 = time.perf_counter()
-    X, C, J, E = ssc_admm(
+    X_sp, C_sp, E_sp = ssc_admm(
         Y,
-        lambda_e=args.lambda_e,
-        lambda_z=args.lambda_z,
+        lambda_e=args.lambda_e / sigma1,
+        lambda_z=args.lambda_z / sigma1,
         mu=args.mu,
-        rho=1,
-        gamma=2,
         max_iter=args.max_iter,
         tol=args.tol,
     )
-    # X, C, E = ssc_admm(
-    #     Y,
-    #     lambda_e=args.lambda_e,
-    #     lambda_z=args.lambda_z,
-    #     mu=args.mu,
-    #     max_iter=args.max_iter,
-    #     tol=args.tol,
-    # )
-    elapsed = time.perf_counter() - t0
-
-    pred = cluster_from_C(X, args.k)
-
-    # Simple diagnostics (no ground-truth labels for real Hi-C windows)
-    recon = np.linalg.norm(Y - Y @ X - E, ord="fro") / (np.linalg.norm(Y, ord="fro") + 1e-12)
-    sparsity = float(np.mean(np.abs(X) < 1e-8))
-    metrics = {
-        "time_s": float(elapsed),
-        "recon_rel_fro": float(recon),
-        "sparsity(|X|<1e-8)": float(sparsity),
+    elapsed_sp = time.perf_counter() - t0
+    pred_sp = cluster_from_C(X_sp, args.k)
+    recon_sp = np.linalg.norm(Y - Y @ X_sp - E_sp, "fro") / (np.linalg.norm(Y, "fro") + 1e-12)
+    metrics_sp = {
+        "time_s":   round(elapsed_sp, 2),
+        "recon":    round(float(recon_sp), 4),
+        "sparsity": round(float(np.mean(np.abs(X_sp) < 1e-8)), 4),
     }
-    print(f"Done. {metrics}")
+    print(f"Sparse done. {metrics_sp}")
 
-    visualize_hic_ssc(Y_raw, X, pred, metrics, args.out)
+    # ── Nuc (nuclear norm only) ───────────────────────────────────────────────
+    print("\nRunning SSC-ADMM Nuc ...")
+    t0 = time.perf_counter()
+    X_nuc, C_nuc, J_nuc, E_nuc = ssc_admm_nuc(
+        Y,
+        lambda_e=args.lambda_e / sigma1,
+        lambda_z=args.lambda_z / sigma1,
+        mu=args.mu,
+        rho=1.0,
+        max_iter=args.max_iter,
+        tol=args.tol,
+    )
+    elapsed_nuc = time.perf_counter() - t0
+    pred_nuc = cluster_from_C(X_nuc, args.k)
+    print(f"Nuc done. time={elapsed_nuc:.2f}s  "
+          f"recon={np.linalg.norm(Y - Y @ X_nuc - E_nuc, 'fro') / (np.linalg.norm(Y, 'fro') + 1e-12):.4f}")
+
+    # ── NucLap ────────────────────────────────────────────────────────────────
+    print(f"\nRunning SSC-ADMM NucLap (gamma={gamma:.4g}) ...")
+    t0 = time.perf_counter()
+    X_lap, J_lap, C_lap, E_lap = ssc_admm_nuc_lap(
+        Y,
+        lambda_e=args.lambda_e / sigma1,
+        lambda_z=args.lambda_z / sigma1,
+        mu=args.mu,
+        rho=1,
+        gamma=gamma,
+        max_iter=args.max_iter,
+        tol=args.tol,
+    )
+    elapsed_lap = time.perf_counter() - t0
+    pred_lap = cluster_from_C(X_lap, args.k)
+    recon_lap = np.linalg.norm(Y - Y @ X_lap - E_lap, "fro") / (np.linalg.norm(Y, "fro") + 1e-12)
+    metrics_lap = {
+        "time_s": round(elapsed_lap, 2),
+        "recon": round(float(recon_lap), 4),
+        "sparsity": round(float(np.mean(np.abs(X_lap) < 1e-8)), 4),
+    }
+    print(f"NucLap done. {metrics_lap}")
+
+    # ── NucL1 ─────────────────────────────────────────────────────────────────
+    print(f"\nRunning SSC-ADMM NucL1 (λ_sp={lambda_sp:.4g}, λ_lr={lambda_lr:.4g}) ...")
+    t0 = time.perf_counter()
+    X_l1, C_l1, S_l1, J_l1, E_l1 = ssc_admm_nuc_l1(
+        Y,
+        lambda_sp=1,
+        lambda_lr=1,
+        lambda_e=args.lambda_e / sigma1,
+        lambda_z=args.lambda_z / sigma1,
+        mu=args.mu,
+        rho_sp=1.0,
+        rho_e=1.0,
+        max_iter=args.max_iter,
+        tol=args.tol,
+    )
+    elapsed_l1 = time.perf_counter() - t0
+    pred_l1 = cluster_from_C(X_l1, args.k)
+    recon_l1 = np.linalg.norm(Y - Y @ X_l1 - E_l1, "fro") / (np.linalg.norm(Y, "fro") + 1e-12)
+    metrics_l1 = {
+        "time_s": round(elapsed_l1, 2),
+        "recon": round(float(recon_l1), 4),
+        "sparsity": round(float(np.mean(np.abs(X_l1) < 1e-8)), 4),
+    }
+    print(f"NucL1 done. {metrics_l1}")
+
+    visualize_hic_ssc(Y_raw,
+                      X_sp,  pred_sp,
+                      X_nuc, pred_nuc,
+                      X_lap, pred_lap,
+                      X_l1,  pred_l1,
+                      args.k,
+                      args.out)
     print(f"Saved figure to {args.out}")
 
 

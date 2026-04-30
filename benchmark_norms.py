@@ -235,8 +235,10 @@ def plot_comparison(cases, rows, save_path="benchmark_norms.png"):
     n_methods = len(METHODS)
     w = 0.25
     offsets = np.linspace(-(n_methods - 1) / 2 * w, (n_methods - 1) / 2 * w, n_methods)
-    # Match requested palette: pink, teal, bright orange
-    colors = {"l1": "#FF5FA2", "nuc": "#FFA500", "nuc_lap": "#17BEBB"}
+    # Use a consistent viridis palette across methods.
+    viridis = plt.get_cmap("viridis")
+    viridis_vals = np.linspace(0.15, 0.85, len(METHODS))
+    colors = {m: viridis(v) for m, v in zip(METHODS, viridis_vals)}
 
     fig, ax = plt.subplots(figsize=(16, 6))
     for m, off in zip(METHODS, offsets):
@@ -268,8 +270,10 @@ def plot_time_comparison(cases, rows, save_path="benchmark_norms_time.png"):
     n_methods = len(METHODS)
     w = 0.25
     offsets = np.linspace(-(n_methods - 1) / 2 * w, (n_methods - 1) / 2 * w, n_methods)
-    # Match requested palette: pink, teal, bright orange
-    colors = {"l1": "#FF5FA2", "nuc": "#FFA500", "nuc_lap": "#17BEBB"}
+    # Use the same viridis palette as the ARI comparison plot.
+    viridis = plt.get_cmap("viridis")
+    viridis_vals = np.linspace(0.15, 0.85, len(METHODS))
+    colors = {m: viridis(v) for m, v in zip(METHODS, viridis_vals)}
 
     fig, ax = plt.subplots(figsize=(16, 5))
     for m, off in zip(METHODS, offsets):
