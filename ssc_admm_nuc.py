@@ -149,8 +149,13 @@ def ssc_admm(
 
 # ── Clustering from C ──────────────────────────────────────────────────────────
 
-def cluster_from_C(C, k):
-    """Spectral clustering on the symmetric affinity W = |C| + |C|^T."""
+def cluster_from_C(C, k=None):
+    """Spectral clustering on the symmetric affinity W = |C| + |C|^T.
+
+    If k is None, k is estimated via the eigengap heuristic on the
+    symmetrically-normalised affinity D^{-½}WD^{-½}, clipped to [1, 12] TADs.
+    TODO: above heuristic not implemented yet.
+    """
     W = np.abs(C) + np.abs(C.T)
     sc = SpectralClustering(n_clusters=k, affinity='precomputed',
                             assign_labels='kmeans', random_state=0)

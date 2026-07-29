@@ -1,9 +1,9 @@
 """
-Benchmark: L1-norm vs Nuclear-norm vs Nuclear+Laplacian SSC
-===========================================================
+Benchmark: L1-norm vs Nuclear-norm vs Nuclear+Laplacian vs Nuclear+TV SSC
+==========================================================================
 Generates a sweep of random block-diagonal adjacency matrices with varying
 difficulty (cluster count, size, within/between edge probabilities) and
-compares three ADMM formulations on subspace clustering quality (ARI).
+compares four ADMM formulations on subspace clustering quality (ARI).
 """
 
 import warnings
@@ -21,6 +21,7 @@ from ssc_admm import (
 )
 from ssc_admm_nuc import ssc_admm as ssc_nuc
 from ssc_admm_nuc_lap import ssc_admm_nuc_lap
+from ssc_admm_nuc_total_var import ssc_admm_nuc_tv
 
 # ── Test-case definitions ─────────────────────────────────────────────────────
 
@@ -108,9 +109,10 @@ TEST_CASES = [
 L1_PARAMS      = dict(lambda_e=1.0, lambda_z=10.0, mu=1.0, max_iter=500, tol=1e-4)
 NUC_PARAMS     = dict(lambda_e=1.0, lambda_z=0.1,  mu=1.0, max_iter=500, tol=1e-4)
 NUC_LAP_PARAMS = dict(lambda_e=1.0, lambda_z=0.1, gamma=0.1, mu=1.0, rho=1.0, max_iter=500, tol=1e-4)
+NUC_TV_PARAMS  = dict(lambda_e=1.0, lambda_z=0.1, gamma=0.1, mu=1.0, sigma=1.0, max_iter=500, tol=1e-4)
 
-METHODS = ["l1", "nuc", "nuc_lap"]
-METHOD_LABELS = {"l1": "L1", "nuc": "Nuc", "nuc_lap": "Nuc+Lap"}
+METHODS = ["l1", "nuc", "nuc_lap", "nuc_tv"]
+METHOD_LABELS = {"l1": "L1", "nuc": "Nuc", "nuc_lap": "Nuc+Lap", "nuc_tv": "Nuc+TV"}
 
 NUM_SEEDS = 5  # random repetitions per test case
 
@@ -126,6 +128,8 @@ def run_one(Y, true_labels, k, method="l1"):
         X, _C, _J, _E = ssc_nuc(Y, **NUC_PARAMS)
     elif method == "nuc_lap":
         X, _J, _C, _E = ssc_admm_nuc_lap(Y, **NUC_LAP_PARAMS)
+    elif method == "nuc_tv":
+        X, _C, _E = ssc_admm_nuc_tv(Y, **NUC_TV_PARAMS)
     else:
         raise ValueError(f"Unknown method: {method}")
     elapsed = time.perf_counter() - t0
@@ -199,7 +203,7 @@ def summarize(results):
 
 def print_table(cases, rows):
     hdr = (f"{'Test case':<28} {'L1 ARI':>12} {'Nuc ARI':>12} "
-           f"{'Nuc+Lap ARI':>12} {'Winner':>8}")
+           f"{'Nuc+Lap ARI':>12} {'Nuc+TV ARI':>12} {'Winner':>8}")
     print(f"\n{'─'*len(hdr)}")
     print(hdr)
     print(f"{'─'*len(hdr)}")
@@ -217,7 +221,7 @@ def print_table(cases, rows):
         else:
             winner = METHOD_LABELS[best_m]
         print(f"{case:<28} {strs['l1']:>12} {strs['nuc']:>12} "
-              f"{strs['nuc_lap']:>12} {winner:>8}")
+              f"{strs['nuc_lap']:>12} {strs['nuc_tv']:>12} {winner:>8}")
     print(f"{'─'*len(hdr)}")
 
 
@@ -250,7 +254,7 @@ def plot_comparison(cases, rows, save_path="benchmark_norms.png"):
     ax.set_xticklabels(cases, rotation=35, ha="right", fontsize=9)
     ax.set_ylabel("Adjusted Rand Index")
     ax.set_ylim(0, 1.05)
-    ax.set_title("L1  vs  Nuclear  vs  Nuclear+Laplacian SSC  "
+    ax.set_title("L1  vs  Nuclear  vs  Nuclear+Laplacian  vs  Nuclear+TV SSC  "
                  f"({NUM_SEEDS} seeds per case)")
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
@@ -283,7 +287,7 @@ def plot_time_comparison(cases, rows, save_path="benchmark_norms_time.png"):
     ax.set_xticks(x)
     ax.set_xticklabels(cases, rotation=35, ha="right", fontsize=9)
     ax.set_ylabel("Wall-clock time (s)")
-    ax.set_title("Runtime: L1  vs  Nuclear  vs  Nuclear+Laplacian SSC")
+    ax.set_title("Runtime: L1  vs  Nuclear  vs  Nuclear+Laplacian  vs  Nuclear+TV SSC")
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
     plt.tight_layout()
