@@ -63,6 +63,17 @@ def soft_threshold(x, tau):
     return np.sign(x) * np.maximum(np.abs(x) - tau, 0.0)
 
 
+def block_soft_threshold_cols(M, tau):
+    """Proximal operator of tau * ||·||_{2,1} (sum of column L2-norms).
+
+    Each column m_j is shrunk toward zero by the group lasso rule:
+        prox(m_j) = max(0, 1 - tau / ||m_j||_2) * m_j
+    """
+    col_norms = np.linalg.norm(M, axis=0, keepdims=True)          # (1, N)
+    scale = np.maximum(1.0 - tau / np.maximum(col_norms, 1e-12), 0.0)
+    return scale * M
+
+
 def finite_diff_matrix(N):
     """First-order finite-difference operator D ∈ ℝ^{(N-1)×N}."""
     D = np.zeros((N - 1, N))
@@ -146,6 +157,112 @@ def ssc_admm_nuc_tv(
 
         # 5. E-update
         E = soft_threshold(Y - Y @ X, lambda_e / lambda_z)
+
+        # 6. Dual updates
+        C_off = C - np.diag(np.diag(C))
+        Lambda += mu    * (X   - C_off)
+        Pi_P   += sigma * (DC  - P)
+        Pi_Q   += sigma * (CDt - Q)
+
+        # Convergence check
+        primal_res = max(
+            np.linalg.norm(X   - C_off, 'fro'),
+            np.linalg.norm(DC  - P,     'fro'),
+            np.linalg.norm(CDt - Q,     'fro'),
+        )
+        dual_res = mu * np.linalg.norm(X - X_prev, 'fro')
+        if primal_res < tol and dual_res < tol:
+            break
+
+    return X, C, E
+
+
+def ssc_admm_nuc_tv_e21(
+    Y,
+    lambda_e=1.0,
+    lambda_z=0.1,
+    gamma=0.1,
+    mu=1.0,
+    sigma=1.0,
+    max_iter=50,
+    tol=1e-4,
+):
+    """
+    SSC-ADMM with TV on C and L2,1 norm on E (column-group sparsity).
+
+    Objective
+    ---------
+        min   λ_e ||E||_{2,1}  +  (λ_z/2) ||Y − YX − E||_F^2
+              +  γ ( ||DC||_1 + ||CD^T||_1 )
+        s.t.  X = C_off,   DC = P,   CD^T = Q,   diag(C) = 0
+
+    The only difference from ``ssc_admm_nuc_tv`` is the E-update, which uses
+    the column-wise block soft-threshold (group lasso proximal operator) instead
+    of the element-wise soft-threshold:
+
+        E_j = max(0, 1 − (λ_e/λ_z) / ||r_j||_2) · r_j,   r = Y − YX
+
+    This encourages entire columns of E to be zero, modelling sample-level
+    (rather than entry-level) corruption.
+
+    Parameters
+    ----------
+    Y        : ndarray (n, N)   data matrix (columns = data points)
+    lambda_e : float            weight on ||E||_{2,1}
+    lambda_z : float            weight on reconstruction loss
+    gamma    : float            TV regularisation weight  γ(||DC||_1 + ||CD^T||_1)
+    mu       : float            ADMM penalty for the X = C_off constraint
+    sigma    : float            ADMM penalty for the TV auxiliary constraints
+    max_iter : int
+    tol      : float            convergence tolerance (max primal Frobenius residual)
+
+    Returns
+    -------
+    X, C, E : ndarrays
+    """
+    n, N = Y.shape
+
+    # ── Precompute static quantities ──────────────────────────────────────────
+    D = finite_diff_matrix(N)
+    K = D.T @ D
+    eigs, V = np.linalg.eigh(K)
+
+    denom = mu + sigma * (eigs[:, None] + eigs[None, :])
+    A_inv = np.linalg.inv(lambda_z * (Y.T @ Y) + mu * np.eye(N))
+
+    # ── Initialise primal and dual variables ──────────────────────────────────
+    X = np.zeros((N, N))
+    C = np.zeros((N, N))
+    E = np.zeros((n, N))
+    P = np.zeros((N - 1, N))
+    Q = np.zeros((N, N - 1))
+
+    Lambda = np.zeros((N, N))
+    Pi_P   = np.zeros((N - 1, N))
+    Pi_Q   = np.zeros((N, N - 1))
+
+    for it in range(max_iter):
+        X_prev = X
+
+        # 1. X-update
+        C_off = C - np.diag(np.diag(C))
+        X = A_inv @ (lambda_z * (Y.T @ (Y - E)) + mu * C_off - Lambda)
+
+        # 2. C-update (Sylvester equation via eigendecomposition of K)
+        P_tilde = P - Pi_P / sigma
+        Q_tilde = Q - Pi_Q / sigma
+        RHS_C   = mu * (X + Lambda / mu) + sigma * (D.T @ P_tilde + Q_tilde @ D)
+        C = V @ ((V.T @ RHS_C @ V) / denom) @ V.T
+        np.fill_diagonal(C, 0.0)
+
+        # 3-4. P- and Q-updates
+        DC  = D @ C
+        CDt = C @ D.T
+        P = soft_threshold(DC  + Pi_P / sigma, gamma / sigma)
+        Q = soft_threshold(CDt + Pi_Q / sigma, gamma / sigma)
+
+        # 5. E-update — column-wise block soft-threshold (L2,1 proximal step)
+        E = block_soft_threshold_cols(Y - Y @ X, lambda_e / lambda_z)
 
         # 6. Dual updates
         C_off = C - np.diag(np.diag(C))
